@@ -1,0 +1,1443 @@
+---
+- hosts: all
+  vars:
+    host_user: survey
+    host_pwd: survey
+    samba_pwd: survey
+    db_root_pwd: root
+
+  tasks:
+    - name: install sudo
+      apt:
+        name: sudo
+        state: present
+
+#  Promoting default account to Sudoer
+#  
+#  The default account will need superuser privledges to complete the OpenVDMv2 install. Promote the default account using the following command:
+#  
+#  usermod -aG sudo <username>
+#  
+    - name: create survey account with sudo permissions 
+      user:
+        name: survey
+        groups: sudo
+        append: yes
+      become: yes
+
+#  SSH Client/Server
+#  
+#  SSH is used thoughout OpenVDM for providing secure communication between the Warehouse and collection systems workstations aboard the vessel. SSH is also used for OpenVDM's ship-to-shore communications.
+#  
+#  To install SSH open a terminal window and type:
+#  
+#  sudo apt-get install ssh sshpass
+    - name: install sshpass
+      apt:
+        name: sshpass
+        state: present
+      become: yes
+#  
+#  Rsync
+#  
+#  Rsync is used thoughout OpenVDM for providing efficient data transfers to/from the Warehouse.
+#  
+#  To install rsync open a terminal window and type:
+#  
+#  sudo apt-get install rsync
+    - name: install rsync
+      apt:
+        name: rsync
+        state: present
+      become: yes
+#  
+#  Samba
+#  
+#  One of the ways OpenVDM communicates with data collection system is through Windows Shares configured on the collection system workstation. Windows shares are also configured on the data warehouse to allow scientists and crew to easily access data stored on the Warehouse from their Windows or Mac Laptops. Windows shares on a non-windows machine are made possible thanks to the Samba project.
+#  
+#  To install Samba open a terminal window and type:
+#  
+#  sudo apt-get install samba smbclient cifs-utils
+    - name: install samba
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - samba
+        - smbclient
+        - cifs-utils
+      become: yes
+      register: install_samba
+#  
+#  Initialize the username creating during the OS installation for samba. Change the username in the command below to the appropriate username for the current installation. When prompted, set the password to the same password set of the user during the OS installation.
+#  
+#  sudo smbpasswd -a survey
+    - name: set survey samba password
+      shell: printf "{{ samba_pwd }}\n{{ samba_pwd }}" | smbpasswd -a -s {{ host_user }}
+      when: install_samba|succeeded
+      become: yes
+
+#  MySQL Database Server
+#  
+#  All of the commonly used variables, tranfer profiles, and user creditials for OpenVDM are stored in a SQL database. This allows fast access to the stored information as well as a proven mechanism for multiple clients to change records without worry of write collisions.
+#  
+#  To install MySQL open a terminal window and type:
+#  
+#  sudo apt-get install mysql-server
+#  
+#  When installing MySQL you will be prompted to provide a 'root' password. This is different than the 'root' password for the operating system but just as important to remember.
+#  PHP7.0
+    - name: Specify MySQL root password before installing
+      debconf: 
+        name: mysql-server 
+        question: 'mysql-server/root_password' 
+        value: '{{db_root_pwd | quote}}' 
+        vtype: 'password'
+      become: yes
+
+    - name: Confirm MySQL root password before installing
+      debconf: 
+        name: 'mysql-server' 
+        question: 'mysql-server/root_password_again' 
+        value: '{{db_root_pwd | quote}}' 
+        vtype: 'password'
+      become: yes
+
+    - name: install mysql-server
+      apt:
+        name: mysql-server
+        state: present
+      register: install_mysql
+      become: yes
+#  
+#  The language used to write the OpenVDMv2 web-interface is PHP.
+#  
+#  To install PHP open a terminal window and type:
+#  
+#  sudo apt-get install php7.0 php7.0-cli php7.0-mysql php7.0-dev php7.0-zip php7.0-curl
+    - name: install php7
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - php7.0
+        - php7.0-cli
+        - php7.0-mysql
+        - php7.0-dev
+        - php7.0-zip
+        - php7.0-curl
+      become: yes
+
+#  
+#  Apache2 Web-server
+#  
+#  The OpenVDM web-application is served by the Warehouse via the Apache2 Web-Server
+#  
+#  To install Apache open a terminal window and type:
+#  
+#  sudo apt-get install apache2 libapache2-mod-php7.0
+    - name: install apache2
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - apache2
+        - libapache2-mod-php7.0
+      register: install_apache2
+      become: yes
+#  
+#  Apache2 is installed by Xubuntu by default but an Apache2 module must be enabled. To enable the additional module open a terminal window and type:
+#  
+#  sudo a2enmod rewrite
+#  
+#  After enabling the module the webserver must be restarted:
+#  
+#  sudo service apache2 restart
+    - name: enable mod_rewrite
+      apache2_module: 
+        name: rewrite
+        state: present
+      notify:
+        - restart apache2
+      become: yes
+#  
+#  Gearman and Supervisor
+#  
+#  Behind the OpenVDM web-application are several background processes that perform the various data transfers and other tasks. Managing these background processes is a job broker and processes manager.
+#  
+#  The job broker listens for requests to perform a specific task. Once a request has arrived, the job broker farms the task out to the next available process that can perform that specific task. OpenVDM uses Gearman as it's job broker.
+#  
+#  Making sure the right type and number of worker processes are available to Gearman is the role of the process manager. OpenVDM uses Supervisor as it's process manager.
+#  Installing Gearman
+#  
+#  To install Gearman open and terminal window and type the following commands:
+#  
+#  sudo apt-get install gearman-job-server libgearman-dev python-gearman
+#  
+#  Restart the Gearman Job Broker
+#  
+#  sudo service gearman-job-server restart
+    - name: install gearman job server
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - gearman-job-server
+        - libgearman-dev
+        - python-gearman
+      register: install_gearman
+      notify:
+        - restart gearman
+      become: yes
+#  
+#  Gearman-UI
+#  
+#  Gearman-UI is not directly part of OpenVDM or the Gearman job broker however it is extremely useful when troubleshooting problems with Gearman.
+#  Installing composer
+#  
+#  From a terminal window type:
+#  
+#  cd ~
+#  sudo apt-get install curl
+#  curl -sS https://getcomposer.org/installer | php
+#  sudo mv composer.phar /usr/local/bin/composer
+
+    - name: install curl
+      apt:
+        name: curl
+        state: present
+      become: yes
+
+    - name: check for composer
+      stat:
+        path: /usr/local/bin/composer
+      register: find_composer
+
+    - name: fetch and build composer
+      shell: curl -sS https://getcomposer.org/installer | php
+      args:
+        chdir: "/home/{{ host_user }}"
+        creates: "/home/{{ host_user }}/composer.phar"
+      become_user: "{{ host_user }}"
+      become: yes
+      register: build_composer
+      when: not find_composer.stat.exists
+
+    - name: install composer
+      command: mv /home/{{ host_user }}/composer.phar /usr/local/bin/composer
+      args:
+        creates: /usr/local/bin/composer
+      become: yes
+
+    - name: set permissions on /usr/local/bin/composer
+      file:
+        path: /usr/local/bin/composer
+        owner: root
+        group: root
+        state: file
+      become: yes
+        
+#  
+#  Install bower
+#  
+#  sudo apt-get install npm nodejs-legacy
+#  sudo npm install -g bower
+    - name: install npm
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - npm
+        - nodejs-legacy
+      register: install_npm
+      become: yes
+
+    - name: install bower
+      npm:
+        name: bower
+        state: present
+        global: yes
+      when: install_npm|succeeded
+      become: yes
+#  
+#  Install Gearman-UI
+#  
+#  Download the code from GitHub
+#  
+#  cd ~
+#  sudo apt-get install git
+#  git clone git://github.com/gaspaio/gearmanui.git ~/gearman-ui
+    - name: install git
+      apt:
+        name: git
+        state: present
+      become: yes
+
+    - name: clone gearman-ui
+      git:
+        repo: git://github.com/gaspaio/gearmanui.git
+        dest: /home/{{ host_user }}/gearman-ui
+        depth: 1
+      register: clone_gearman_ui
+      become_user: "{{ host_user }}"
+      become: true
+#  
+#  Configure the site using the default configuration file
+#  
+#  cd ~/gearman-ui
+#  composer install --no-dev
+#  bower install
+#  cp config.yml.dist config.yml
+    - name: run composer on gearman-ui
+      composer:
+        command: install
+        no_dev: true
+        working_dir: /home/{{ host_user }}/gearman-ui
+      register: composer_gearman_ui
+      become_user: "{{ host_user }}"
+      become: true
+
+    - name: run bower on gearman-ui
+      bower:
+        path: /home/{{ host_user }}/gearman-ui
+      become_user: "{{ host_user }}"
+      become: true
+      when: composer_gearman_ui|succeeded
+      register: bower_gearman_ui
+
+    - name: copy default gearman-ui config
+      copy:
+        src: /home/{{ host_user }}/gearman-ui/config.yml.dist
+        dest: /home/{{ host_user }}/gearman-ui/config.yml
+        remote_src: true
+      become_user: "{{ host_user }}"
+      become: true
+#  
+#  Move the site to where Apache2 can access it.
+#  
+#  cd ~
+#  sudo mv gearman-ui /var/www/
+#  sudo chown -R root:root /var/www/gearman-ui
+    - name: make /var/www
+      file:
+        path: /var/www
+        state: directory
+      become: yes
+
+    - name: move to /var/www/gearman-ui
+      command: mv /home/{{ host_user }}/gearman-ui /var/www
+      args:
+        creates: /var/www/gearman-ui
+      become: yes
+
+    - name: set permissions on /var/www/gearman-ui
+      file:
+        path: /var/www/gearman-ui
+        owner: root
+        group: root
+        recurse: true
+      become: yes
+
+#  
+#  Edit the default Apache2 VHost file.
+#  
+#  sudo nano /etc/apache2/sites-available/000-default.conf
+#  
+#  Copy text below into the Apache2 configuration file just above </VirtualHost>.
+#  
+#  Alias /gearman-ui /var/www/gearman-ui/web
+#  <Directory "/var/www/gearman-ui/web">
+#    <IfModule mod_rewrite.c>
+#      Options -MultiViews
+#      RewriteEngine On
+#      RewriteBase /gearman-ui/
+#      RewriteCond %{REQUEST_FILENAME} !-f
+#      RewriteRule ^ index.php [QSA,L]
+#    </IfModule>
+#  </Directory>
+#  
+#  Reload Apache2
+#  
+#  sudo service apache2 reload
+#  
+#  Verify the installation was successful by going to: http://127.0.0.1/gearman-ui
+    - name: create gearman-ui directive in apache default config
+      blockinfile:
+        path: /etc/apache2/sites-available/000-default.conf
+        insertbefore: </VirtualHost>
+        marker: "# {mark} gearman-ui block"
+        block: |
+          Alias /gearman-ui /var/www/gearman-ui/web
+          <Directory "/var/www/gearman-ui/web">
+            <IfModule mod_rewrite.c>
+              Options -MultiViews
+              RewriteEngine On
+              RewriteBase /gearman-ui/
+              RewriteCond %{REQUEST_FILENAME} !-f
+              RewriteRule ^ index.php [QSA,L]
+            </IfModule>
+          </Directory>
+      become: yes
+      notify:
+        - restart apache2
+
+#  Installing Supervisor
+#  
+#  To install Supervisor open and terminal window and type the following command:
+#  
+#  sudo apt-get install supervisor
+    - name: install supervisor
+      apt:
+        name: supervisor
+        state: present
+      become: yes
+#  
+#  Add the following lines to /etc/supervisor/supervisord.conf:
+#  
+#  [inet_http_server]
+#  port = 9001
+#  
+#  Editing this file will require root privledges.
+#  
+#  sudo nano /etc/supervisor/supervisord.conf
+#  
+#  Restart Supervisor:
+#  
+#  sudo service supervisor restart
+    - name: set supervisor http port
+      ini_file:
+        path: /etc/supervisor/supervisord.conf
+        section: inet_http_server
+        option: port
+        value: 9001
+      become: yes
+      notify:
+        - restart supervisor
+#  
+#  Enable Supervisor to start at boot
+#  
+#  sudo systemctl enable supervisor
+
+    - name: enable supervisor at boot
+      service:
+        name: supervisor
+        state: started
+        enabled: yes
+#  
+#  Verify the istallation was successful by going to http://127.0.0.1:9001.
+#  MapProxy
+#  
+#  In order to add GIS capability to OpenVDMv2 without eccessive requests to the internet for baselayer tiles a map tile proxy needs to be installed.
+#  
+#  Install the dependencies
+#  
+#  sudo apt-get install python-pip python-imaging python-yaml libgeos-dev python-lxml libgdal-dev python-shapely
+    - name: install MapProxy dependencies
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - python-pip 
+        - python-imaging 
+        - python-yaml 
+        - libgeos-dev 
+        - python-lxml 
+        - libgdal-dev 
+        - python-shapely
+      become: true
+#  
+#  Install MapProxy
+#  
+#  sudo pip install MapProxy
+    - name: install MapProxy
+      pip:
+        name: MapProxy
+        state: present
+      become: true
+#  
+#  Build the initial configuration
+#  
+#  cd ~
+#  mapproxy-util create -t base-config mapproxy
+    - name: check for existing mapproxy app
+      stat:
+        path: /var/www/mapproxy
+      register: find_mapproxy
+
+    - name: create initial mapproxy config
+      command: mapproxy-util create -t base-config mapproxy
+      args:
+        chdir: /home/{{ host_user }}
+        creates: /home/{{ host_user }}/mapproxy
+      become_user: "{{ host_user }}"
+      become: true
+      when: not find_mapproxy.stat.exists
+#  
+#  Copy the following into ~/mapproxy/mapproxy.yaml
+#  
+#  # -------------------------------
+#  # MapProxy configuration.
+#  # -------------------------------
+#  
+#  # Start the following services:
+#  services:
+#    demo:
+#    tms:
+#      use_grid_names: false
+#      # origin for /tiles service
+#      origin: 'nw'
+#    kml:
+#      #use_grid_names: true
+#    wmts:
+#    wms:
+#      srs: ['EPSG:900913']
+#      image_formats: ['image/png']
+#      md:
+#        title: MapProxy WMS Proxy
+#        abstract: This is a minimal MapProxy installation.
+#  
+#  #Make the following layers available
+#  layers:
+#    - name: WorldOceanBase
+#      title: ESRI World Ocean Base
+#      sources: [esri_worldOceanBase_cache]
+#  
+#    - name: WorldOceanReference
+#      title: ESRI World Ocean Reference
+#      sources: [esri_worldOceanReference_cache]
+#  
+#    - name: GMRTBase
+#      title: GMRT Basemap
+#      sources: [gmrt_wms_cache]
+#  
+#  caches:
+#    esri_worldOceanBase_cache:
+#      grids: [esri_online]
+#      sources: [esri_worldOceanBase]
+#  
+#    esri_worldOceanReference_cache:
+#      grids: [esri_online]
+#      sources: [esri_worldOceanReference]
+#  
+#    gmrt_wms_cache:
+#      grids: [gmrt]
+#      sources: [gmrt_wms]
+#  
+#  sources:
+#    esri_worldOceanBase:
+#      type: tile
+#      url: http://server.arcgisonline.com/arcgis/rest/services/Ocean/World_Ocean_Base/MapServer/tile/%(z)s/%(y)s/%(x)s.png
+#      grid: esri_online
+#  
+#    esri_worldOceanReference:
+#      type: tile
+#      transparent: true
+#      url: http://server.arcgisonline.com/arcgis/rest/services/Ocean/World_Ocean_Reference/MapServer/tile/%(z)s/%(y)s/%(x)s.png
+#      grid: esri_online
+#  
+#    gmrt_wms:
+#      type: wms
+#      grid: gmrt
+#      supported_srs: ['EPSG:4326', 'EPSG:3395', 'EPSG:3031', 'EPSG:3857','EPSG:900913']
+#      wms_opts:
+#        version: 1.0.0
+#      req:
+#        url: http://gmrt.marine-geo.org/cgi-bin/mapserv?map=/public/mgg/web/gmrt.marine-geo.org/htdocs/services/map/wms_merc.map&
+#        layers: topo
+#        transparent: false
+#  
+#  grids:
+#    webmercator:
+#      base: GLOBAL_WEBMERCATOR
+#  
+#    esri_online:
+#       tile_size: [256, 256]
+#       srs: EPSG:900913
+#       origin: 'nw'
+#       num_levels: 11
+#  
+#    gmrt:
+#      tile_size: [256,256]
+#      srs: EPSG:900913
+#      origin: 'nw'
+#  
+#  globals:
+
+    - name: create default mapproxy config
+      become_user: "{{ host_user }}"
+      become: true
+      when: not find_mapproxy.stat.exists
+      copy:
+        dest: /home/{{ host_user }}/mapproxy/mapproxy.yaml
+        content: |
+          # -------------------------------
+          # MapProxy configuration.
+          # -------------------------------
+
+          # Start the following services:
+          services:
+            demo:
+            tms:
+              use_grid_names: false
+              # origin for /tiles service
+              origin: 'nw'
+            kml:
+              #use_grid_names: true
+            wmts:
+            wms:
+              srs: ['EPSG:900913']
+              image_formats: ['image/png']
+              md:
+                title: MapProxy WMS Proxy
+                abstract: This is a minimal MapProxy installation.
+
+          #Make the following layers available
+          layers:
+            - name: WorldOceanBase
+              title: ESRI World Ocean Base
+              sources: [esri_worldOceanBase_cache]
+
+            - name: WorldOceanReference
+              title: ESRI World Ocean Reference
+              sources: [esri_worldOceanReference_cache]
+
+            - name: GMRTBase
+              title: GMRT Basemap
+              sources: [gmrt_wms_cache]
+
+          caches:
+            esri_worldOceanBase_cache:
+              grids: [esri_online]
+              sources: [esri_worldOceanBase]
+
+            esri_worldOceanReference_cache:
+              grids: [esri_online]
+              sources: [esri_worldOceanReference]
+
+            gmrt_wms_cache:
+              grids: [gmrt]
+              sources: [gmrt_wms]
+
+          sources:
+            esri_worldOceanBase:
+              type: tile
+              url: http://server.arcgisonline.com/arcgis/rest/services/Ocean/World_Ocean_Base/MapServer/tile/%(z)s/%(y)s/%(x)s.png
+              grid: esri_online
+
+            esri_worldOceanReference:
+              type: tile
+              transparent: true
+              url: http://server.arcgisonline.com/arcgis/rest/services/Ocean/World_Ocean_Reference/MapServer/tile/%(z)s/%(y)s/%(x)s.png
+              grid: esri_online
+
+            gmrt_wms:
+              type: wms
+              grid: gmrt
+              supported_srs: ['EPSG:4326', 'EPSG:3395', 'EPSG:3031', 'EPSG:3857','EPSG:900913']
+              wms_opts:
+                version: 1.0.0
+              req:
+                url: http://gmrt.marine-geo.org/cgi-bin/mapserv?map=/public/mgg/web/gmrt.marine-geo.org/htdocs/services/map/wms_merc.map&
+                layers: topo
+                transparent: false
+
+          grids:
+            webmercator:
+              base: GLOBAL_WEBMERCATOR
+
+            esri_online:
+              tile_size: [256, 256]
+              srs: EPSG:900913
+              origin: 'nw'
+              num_levels: 11
+
+            gmrt:
+              tile_size: [256,256]
+              srs: EPSG:900913
+              origin: 'nw'
+
+          globals:
+
+#  Move the installation to it's final location and set the user/group ownership
+#  
+#  sudo cp -r ~/mapproxy /var/www/
+#  sudo mkdir /var/www/mapproxy/cache_data
+#  sudo chmod 777 /var/www/mapproxy/cache_data
+#  sudo chown -R root:root /var/www/mapproxy
+    - name: install mapproxy into /var/www/mapproxy
+      command: mv /home/{{ host_user }}/mapproxy /var/www/mapproxy
+      args:
+        creates: /var/www/mapproxy
+      when: not find_mapproxy.stat.exists
+      become: true
+
+    - name: create mapproxy cache dir
+      file:
+        path: /var/www/mapproxy/cache_data
+        state: directory
+        mode: 0777
+      become: true
+
+    - name: set mapproxy permissions
+      file:
+        path: /var/www/mapproxy
+        owner: root
+        group: root
+        recurse: true
+      become: true
+
+#  Prepare Apache2 to host the MapProxy installation
+#  
+#  sudo apt-get install libapache2-mod-wsgi
+    - name: install mod-wsgi
+      apt:
+        name: libapache2-mod-wsgi
+        state: present
+      become: true
+#  Prepare the MapProxy installation for integration with the Apache2 web-server
+#  
+#  cd /var/www/mapproxy
+#  sudo mapproxy-util create -t wsgi-app -f mapproxy.yaml config.py
+    - name: create mapproxy config
+      command: mapproxy-util create -t wsgi-app -f mapproxy.yaml config.py
+      args:
+        chdir: /var/www/mapproxy
+        creates: /var/www/mapproxy/config.py
+      become: true
+      
+#  Edit the apache conf
+#  
+#  sudo pico /etc/apache2/sites-available/000-default.conf
+#  
+#  Add the following just above </VirutalHost> at the end of the file
+#  
+#  WSGIScriptAlias /mapproxy /var/www/mapproxy/config.py
+#  
+#  <Directory /var/www/mapproxy/>
+#    Order deny,allow
+#    Allow from all
+#  </Directory>
+#  
+#  Restart Apache2
+#  
+#  sudo service apache2 restart
+    - name: create mapproxy directive in apache default config
+      blockinfile:
+        path: /etc/apache2/sites-available/000-default.conf
+        insertbefore: </VirtualHost>
+        marker: "# {mark} mapproxy block"
+        block: |
+
+          WSGIScriptAlias /mapproxy /var/www/mapproxy/config.py
+          <Directory /var/www/mapproxy/>
+            Order deny,allow
+            Allow from all
+          </Directory>
+      become: yes
+      notify:
+        - restart apache2
+
+  
+#  Verify the installation works by going to: http://127.0.0.1/mapproxy/demo/
+#  OpenVDMv2
+#  Install the dependencies
+#  Installing the python dependencies
+#  
+#  sudo apt-get install python-requests python-yaml
+    - name: install python dependencies for OpenVDMv2
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - python-requests
+        - python-yaml
+      become: true
+
+#  
+#  Installing the gearman php module
+#  
+#  The gearman extension team at pecl has not yet updated the gearman php module to work with php7.0. Luckily the open-source community has come to the rescue.
+#  
+#  Download the module
+#  
+#  cd ~
+#  git clone https://github.com/wcgallego/pecl-gearman.git ~/pecl-gearman
+
+    - name: clone pecl-gearman
+      git:
+        repo: https://github.com/wcgallego/pecl-gearman.git
+        dest: /home/{{ host_user }}/pecl-gearman
+      become_user: "{{ host_user }}"
+      become: true
+#  
+#  Build the module
+#  
+#  cd ~/pecl-gearman
+#  phpize
+    - name: phpize pecl-gearman
+      command: phpize
+      args:
+        chdir: /home/{{ host_user }}/pecl-gearman
+      become_user: "{{ host_user }}"
+      become: true
+#  ./configure
+    - name: configure pecl-gearman
+      command: ./configure
+      args:
+        chdir: /home/{{ host_user }}/pecl-gearman
+      become_user: "{{ host_user }}"
+      become: true
+#  make
+    - name: build pecl-gearman
+      command: make 
+      args:
+        chdir: /home/{{ host_user }}/pecl-gearman
+      become_user: "{{ host_user }}"
+      become: true
+#  sudo make install
+    - name: install pecl-gearman
+      command: make install
+      args:
+        chdir: /home/{{ host_user }}/pecl-gearman
+      become: true
+#  
+#  Create the file /etc/php/7.0/mods-available/gearman.ini
+#  
+#  sudo nano /etc/php/7.0/mods-available/gearman.ini
+#  
+#  Copy the following into gearman.ini
+#  
+#  ; configuration for php common module
+#  ; priority=20
+#  extension=gearman.so
+    - name: add gearman.ini to mods-available
+      copy:
+        dest: /etc/php/7.0/mods-available/gearman.ini
+        content: |
+          ; configuration for php common module
+          ; priority=20
+          extension=gearman.so
+      become: true
+
+#  Enable the new module
+#  
+#  sudo phpenmod gearman
+#  
+#  Restart apache
+#  
+#  sudo service apache2 restart
+#  
+    - name: enable pecl-gearman
+      command: phpenmod gearman
+      args:
+        creates: /etc/php/7.0/mods-enabled/gearman.ini
+      become: true
+      notify:
+        - restart apache2
+#  Installing the yaml php module
+#  
+#  sudo apt-get install libyaml-dev
+    - name: install libyaml-dev
+      apt:
+        name: libyaml-dev
+        state: present
+      become: true
+
+    # - name: check for pecl-yaml
+    #   command: pecl list
+    #   become: true
+    #   register: pecl_list 
+
+#  sudo pecl install yaml-2.0.0
+    - name: install pecl-yaml
+      command: pecl install yaml-2.0.0
+      become: true
+
+#  Create the file /etc/php/7.0/mods-available/yaml.ini
+#  
+#  sudo nano /etc/php/7.0/mods-available/yaml.ini
+#  
+#  Copy the following into yaml.ini
+#  
+#  ; configuration for php common module
+#  ; priority=20
+#  extension=yaml.so
+    - name: add yaml.ini to mods-available
+      copy:
+        dest: /etc/php/7.0/mods-available/yaml.ini
+        content: |
+          ; configuration for php common module
+          ; priority=20
+          extension=yaml.so
+      become: true
+
+#  
+#  Enable the new module
+#  
+#  sudo phpenmod yaml
+#  
+#  Restart apache
+#  
+#  sudo service apache2 restart
+#  
+    - name: enable pecl-yaml
+      command: phpenmod yaml
+      args:
+        creates: /etc/php/7.0/mods-enabled/yaml.ini
+      become: true
+      notify:
+        - restart apache2
+#  Create the Required Directories
+#  
+#  In order for OpenVDMv2 to properly store data serveral directories must be created on the Warehouse
+#  
+#      FTPRoot - This will become the document root for the ProFTP server.
+#      CruiseData - This is the location where the Cruise Data directories will be located. This directory needs to live within the FTPRoot
+#      PublicData - This is the location where the Public Data share will be located. This directory needs to live within the FTPRoot
+#      VisitorInformation - This is the location where ship-specific information will be located. This directory needs to live within the FTPRoot
+#  
+#  The Location of the FTPRoot needs to be large enough to hold multiple cruises worth of data. In typical installation of OpenVDMv2, the location of the FTPRoot is on dedicated hardware (internal RAID array). In these cases the volume is mounted at boot by the OS to a specific location (i.e. /vault). Instructions on mounting volumes at boot is beyond the scope of these installation procedures however.
+#  
+#  For the purposes of these installation instructions the parent folder for FTPRoot will be a large RAID array located at: /vault and the user that will retain ownership of these folders will be "survey"
+#  
+#  sudo mkdir -p /vault/FTPRoot/CruiseData
+#  sudo mkdir -p /vault/FTPRoot/PublicData
+#  sudo mkdir -p /vault/FTPRoot/VisitorInformation
+#  sudo chmod -R 777 /vault/FTPRoot/PublicData
+#  sudo chown -R survey:survey /vault/FTPRoot/*
+
+    - name: create /vault/FTPRoot
+      file:
+        path: /vault/FTPRoot
+        state: directory
+      become: true
+
+    - name: create /vault/FTPRoot/CruiseData
+      file:
+        path: /vault/FTPRoot/CruiseData
+        state: directory
+        owner: "{{ host_user }}"
+        group: users
+      become: true
+
+    - name: create /vault/FTPRoot/PublicData
+      file:
+        path: /vault/FTPRoot/PublicData
+        state: directory
+        mode: 0777
+        owner: "{{ host_user }}"
+        group: users
+      become: true
+
+    - name: create /vault/FTPRoot/VisitorInformation
+      file:
+        path: /vault/FTPRoot/VisitorInformation
+        state: directory
+        owner: "{{ host_user }}"
+        group: users
+      become: true
+
+#  
+#  Download the OpenVDM Files from Github
+#  
+#  From a terminal window type:
+#  
+#  cd ~
+#  git clone git://github.com/webbpinner/OpenVDMv2.git ~/OpenVDMv2
+#  
+    - name: clone OpenVDMv2
+      git:
+        repo: git://github.com/webbpinner/OpenVDMv2.git
+        dest: /home/{{ host_user }}/OpenVDMv2
+      become_user: "{{ host_user }}"
+      become: true
+#  Create OpenVDMv2 Database
+#  
+#  To create a new database first connect to MySQL by typing:
+#  
+#  mysql -h localhost -u root -p
+#  
+#  Once connected to MySQL, create the database by typing:
+#  
+#  CREATE DATABASE OpenVDMv2;
+    - name: install python-mysqldb
+      apt:
+        name: python-mysqldb
+        state: present
+      become: true
+
+    - name: update mysql root password for all root accounts
+      mysql_user: 
+        name: root 
+        host: "{{ item }}" 
+        password: "{{ db_root_pwd }}"
+        login_user: root
+        login_password: "{{ db_root_pwd }}"
+        check_implicit_admin: yes
+        priv: "*.*:ALL,GRANT"
+      with_items:
+        - "{{ ansible_hostname }}"
+        - 127.0.0.1
+        - ::1
+        - localhost 
+      become: true
+  # 'localhost' needs to be the last item for idempotency, see
+  # http://ansible.cc/docs/modules.html#mysql-user
+
+    - name: create OpenVDMv2 database
+      mysql_db:
+        name: OpenVDMv2
+        state: present
+        login_host: localhost
+        login_user: root
+        login_password: "{{ db_root_pwd }}"
+      become: true
+
+#  
+#  Now create a new MySQL user specifically for interacting with only the OpenVDM database. In the example provided below the name of the user is openvdmDBUser and the password for that new user is oxhzbeY8WzgBL3.
+#  
+#  GRANT ALL PRIVILEGES ON OpenVDMv2.* To openvdmDBUser@localhost IDENTIFIED BY 'oxhzbeY8WzgBL3';
+#  
+    - name: grant database permissions
+      shell: echo "GRANT ALL PRIVILEGES ON OpenVDMv2.* To openvdmDBUser@localhost IDENTIFIED BY 'oxhzbeY8WzgBL3';" | mysql -h localhost -u root -p{{ db_root_pwd }}
+      become: true
+
+#  It is not important what the name and password are for this new user however it is important to remember the designated username/password as it will be reference later in the installation.
+#  
+#  To build the database schema and perform the initial import type:
+#  
+#  USE OpenVDMv2;
+#  source ~/OpenVDMv2/OpenVDMv2_db.sql;
+#  
+#  Exit the MySQL console:
+#  
+#  exit
+    - name: check for schema
+      stat:
+        path: /root/.openvdm_schema_imported
+      register: schema_check
+      become: true
+
+    - name: import database schema
+      mysql_db:
+        state: import
+        name: OpenVDMv2
+        target: /home/{{ host_user }}/OpenVDMv2/OpenVDMv2_db.sql
+        login_host: localhost
+        login_user: root
+        login_password: "{{ db_root_pwd }}"
+      become: true
+      register: import_database
+      when: not schema_check.stat.exists
+
+    - name: set schema sentinal
+      file:
+        path: /root/.openvdm_schema_imported
+        state: touch
+      when: import_database|succeeded
+      become: true
+#  
+#  Install the OpenVDM configuration files
+#  
+#  sudo mkdir -p /usr/local/etc/openvdm
+#  sudo cp ~/OpenVDMv2/usr/local/etc/openvdm/openvdm.yaml.dist /usr/local/etc/openvdm/openvdm.yaml
+#  sudo cp ~/OpenVDMv2/usr/local/etc/openvdm/datadashboard.yaml.dist /usr/local/etc/openvdm/datadashboard.yaml
+    - name: create /usr/local/etc/openvdm
+      file:
+        path: /usr/local/etc/openvdm
+        state: directory
+      become: true
+
+    - name: copy default openvdm config
+      copy:
+        src: /home/{{ host_user }}/OpenVDMv2/usr/local/etc/openvdm/openvdm.yaml.dist 
+        dest: /usr/local/etc/openvdm/openvdm.yaml
+        remote_src: true
+      become: true
+
+    - name: copy default datadashboard config
+      copy:
+        src: /home/{{ host_user }}/OpenVDMv2/usr/local/etc/openvdm/datadashboard.yaml.dist 
+        dest: /usr/local/etc/openvdm/datadashboard.yaml
+        remote_src: true
+      become: true
+
+#  Modify the OpenVDM configuation file
+#  
+#  sudo nano /usr/local/etc/openvdm/openvdm.yaml
+#  
+#  Look for the following line:
+#  
+#  siteRoot: "http://127.0.0.1/OpenVDMv2/"
+#  
+#  If the web-application is NOT going to be accessed as http://<server IP>/OpenVDMv2/ Change the URL to match the intended location i.e. http://127.0.0.1/CustomURLJustForOpenVDM/. If URL is changed you will need to specified the exact same URL within the Config.php and .htaccess files. Editing the Config.php and .htaccess files is covered below.
+#  Install the web-application
+#  
+#  Download the dependencies:
+#  
+#  cd ~/OpenVDMv2/var/www/OpenVDMv2
+#  composer install
+    - name: install OpenVDMv2 php dependencies
+      composer:
+        command: install
+        working_dir: /home/{{ host_user }}/OpenVDMv2/var/www/OpenVDMv2
+      become_user: "{{ host_user }}"
+      become: true
+
+#  Copy the web-application code to a directory that can be accessed by Apache
+#  
+#  sudo cp -r ~/OpenVDMv2/var/www/OpenVDMv2 /var/www/
+#  sudo chown -R root:root /var/www/OpenVDMv2
+
+    - name: Copy OpenVDMv2 app to /var/www/OpenVDMv2
+      command: cp -r /home/{{ host_user }}/OpenVDMv2/var/www/OpenVDMv2 /var/www
+      args:
+        creates: /var/www/OpenVDMv2
+      become: true
+
+    - name: Set permissions on /var/www/OpenVDMv2
+      file:
+        path: /var/www/OpenVDMv2
+        state: directory
+        owner: root
+        group: root
+        recurse: true
+      become: true
+#  Create the two required configuration files from the example files provided.
+#  
+#  cd /var/www/OpenVDMv2
+#  sudo cp ./.htaccess.dist ./.htaccess
+#  sudo cp ./app/Core/Config.php.dist ./app/Core/Config.php
+
+    - name: copy default .htaccess to /var/www/OpenVDMv2
+      copy:
+        src: /var/www/OpenVDMv2/.htaccess.dist
+        dest: /var/www/OpenVDMv2/.htaccess
+        remote_src: true
+      become: true
+
+    - name: copy default Config.php to /var/www/OpenVDMv2/app/Core/Config.php
+      copy:
+        src: /var/www/OpenVDMv2/app/Core/Config.php.dist
+        dest: /var/www/OpenVDMv2/app/Core/Config.php
+        remote_src: true
+      become: true
+#  
+#  Modify the two configuration files.
+#  
+#  Edit the .htaccess file:
+#  
+#  sudo nano /var/www/OpenVDMv2/.htaccess
+#  
+#      Set the RewriteBase to part of the URL after the hostname that will become the landing page for OpenVDMv2. By default this is set to OpenVDMv2 meaning that once active users will go to http://<hostname or IP>/OpenVDMv2/. If the default URL was changed in the openvdm.yaml file, you will need to change the RewriteBase accordingly. Be sure to include the trailing /.
+#  
+#  Edit the ./app/Core/Config.php file:
+#  
+#  sudo nano /var/www/OpenVDMv2/app/Core/Config.php
+#  
+#      Set the URL of the OpenVDMv2 installation. If the default URL was changed in the openvdm.yaml file, you will need to change this line accordingly. Be sure to include the trailing /. Look for the following lines and change the IP address in the URL to the actual IP address or hostname of the warehouse:
+#  
+#  //site address
+#  define('DIR', '/OpenVDMv2/');
+#  
+#      Set the base directory containing the cruise data as defined earlier.
+#  
+#  /*
+#   * Define path on webserver that contains cruise data
+#   */
+#  define('CRUISEDATA_BASEDIR', '/vault/FTPRoot/CruiseData');
+#  
+#      Set the access creditials for the MySQL database. Look for the following lines and modify them to fit the actual database name (DB_NAME), database username (DB_USER), and database user password (DB_PASS).
+#  
+#  /*
+#   * Database name.
+#   */
+#  define('DB_NAME', 'OpenVDMv2');
+#  
+#  /*
+#   * Database username.
+#   */
+#  define('DB_USER', 'openvdmDBUser');
+#  
+#  /*
+#   * Database password.
+#   */
+#  define('DB_PASS', 'oxhzbeY8WzgBL3');
+#  
+#  Edit the default Apache2 VHost file.
+#  
+#  sudo nano /etc/apache2/sites-available/000-default.conf
+#  
+#  Copy text below into the Apache2 configuration file just above </VirtualHost>. If you changed the default URL for OpenVDM you will need to edit the Alias definition. You will need to alter the directory locations to match the locations selected for the CruiseData, PublicData and VisitorInformation directories:
+#  
+#    Alias /OpenVDMv2 /var/www/OpenVDMv2
+#    <Directory "/var/www/OpenVDMv2">
+#      AllowOverride all
+#    </Directory>
+#  
+#    <IfModule mod_rewrite.c>
+#      RewriteEngine on
+#      RewriteRule ^/$ /OpenVDMv2/ [R]
+#    </IfModule>
+#  
+#    Alias /CruiseData/ /vault/FTPRoot/CruiseData/
+#    <Directory "/vault/FTPRoot/CruiseData">
+#      AllowOverride None
+#      Options +Indexes -FollowSymLinks +MultiViews
+#      Order allow,deny
+#      Allow from all
+#      Require all granted
+#    </Directory>
+#    
+#    Alias /PublicData/ /vault/FTPRoot/PublicData/
+#    <Directory "/vault/FTPRoot/PublicData">
+#      AllowOverride None
+#      Options +Indexes -FollowSymLinks +MultiViews
+#      Order allow,deny
+#      Allow from all
+#      Require all granted
+#    </Directory>
+#  
+#    Alias /VisitorInformation/ /vault/FTPRoot/VisitorInformation/
+#    <Directory "/vault/FTPRoot/VisitorInformation">
+#      AllowOverride None
+#      Options +Indexes -FollowSymLinks +MultiViews
+#      Order allow,deny
+#      Allow from all
+#      Require all granted
+#    </Directory>
+#  
+#  Reload Apache2
+#  
+#  sudo service apache2 reload
+    - name: create OpenVDMv2 directives in apache default config
+      blockinfile:
+        path: /etc/apache2/sites-available/000-default.conf
+        insertbefore: </VirtualHost>
+        marker: "# {mark} OpenVDMv2 block"
+        block: |
+          Alias /OpenVDMv2 /var/www/OpenVDMv2
+          <Directory "/var/www/OpenVDMv2">
+            AllowOverride all
+          </Directory>
+        
+          <IfModule mod_rewrite.c>
+            RewriteEngine on
+            RewriteRule ^/$ /OpenVDMv2/ [R]
+          </IfModule>
+        
+          Alias /CruiseData/ /vault/FTPRoot/CruiseData/
+          <Directory "/vault/FTPRoot/CruiseData">
+            AllowOverride None
+            Options +Indexes -FollowSymLinks +MultiViews
+            Order allow,deny
+            Allow from all
+            Require all granted
+          </Directory>
+          
+          Alias /PublicData/ /vault/FTPRoot/PublicData/
+          <Directory "/vault/FTPRoot/PublicData">
+            AllowOverride None
+            Options +Indexes -FollowSymLinks +MultiViews
+            Order allow,deny
+            Allow from all
+            Require all granted
+          </Directory>
+        
+          Alias /VisitorInformation/ /vault/FTPRoot/VisitorInformation/
+          <Directory "/vault/FTPRoot/VisitorInformation">
+            AllowOverride None
+            Options +Indexes -FollowSymLinks +MultiViews
+            Order allow,deny
+            Allow from all
+            Require all granted
+          </Directory>
+
+      become: yes
+      notify:
+        - restart apache2
+#  Additionally a log directory must be created for the OpenVDMv2 web-application
+#  
+#  sudo mkdir /var/log/OpenVDM
+    - name: create OpenVDM process log directory
+      file:
+        path: /var/log/OpenVDM
+        state: directory
+      become: true
+#  
+#  Install OpenVDMv2 Processes
+#  
+#  Copy the OpenVDMv2 processes to the /usr/local/bin folder
+#  
+#  sudo cp -r ~/OpenVDMv2/usr/local/bin/* /usr/local/bin/
+    - name: copy OpenVDMv2 processes to /usr/local/bin
+      shell: cp -r /home/{{ host_user }}/OpenVDMv2/usr/local/bin/* /usr/local/bin
+      become: true
+#  
+#  Install the Supervisor configuration files
+#  
+#  sudo cp -r ~/OpenVDMv2/etc/supervisor/conf.d/* /etc/supervisor/conf.d/
+#  sudo cp /etc/supervisor/conf.d/OVDM_runCollectionSystemTransfer.conf.dist /etc/supervisor/conf.d/OVDM_runCollectionSystemTransfer.conf
+#  sudo cp /etc/supervisor/conf.d/OVDM_postCollectionSystemTransfer.conf.dist /etc/supervisor/conf.d/OVDM_postCollectionSystemTransfer.conf
+#
+#  Restart Supervisor
+#  
+#  sudo service supervisor restart
+#  
+    - name: copy OpenVDMv2 supervisor scripts to /etc/supervisor/conf.d/
+      shell: cp -r /home/{{ host_user }}/OpenVDMv2/etc/supervisor/conf.d/* /etc/supervisor/conf.d/
+      become: true
+      notify:
+        - restart supervisor
+
+    - name: install default CollectionSystemTransfer worker
+      copy:
+        src: /etc/supervisor/conf.d/OVDM_runCollectionSystemTransfer.conf.dist
+        dest: /etc/supervisor/conf.d/OVDM_runCollectionSystemTransfer.conf
+        remote_src: true
+      become: true
+      notify:
+        - restart supervisor
+
+    - name: install default CollectionSystemTransfer worker
+      copy:
+        src: /etc/supervisor/conf.d/OVDM_postCollectionSystemTransfer.conf.dist
+        dest: /etc/supervisor/conf.d/OVDM_postCollectionSystemTransfer.conf
+        remote_src: true
+      become: true
+      notify:
+        - restart supervisor
+# 
+#  Setup the Samba shares
+#  
+#  Edit the Samba configuration file located at: /etc/samba/smb.conf.
+#  
+#  Within the authentication section search for the obey pam restrictions line as set it to:
+#  
+#  obey pam restrictions = no
+    - name: set 'obey pam restrictions = no' in /etc/samba/smb.conf
+      lineinfile:
+        path: /etc/samba/smb.conf
+        regexp: "^obey pam restrictions ="
+        line: "obey pam restrictions = no"
+      become: true
+#  Add the following to end of the smb.conf file. Set the user in write list to the username created during the OS installation.
+#  
+#  [CruiseData]
+#    comment=Cruise Data, read-only access to guest
+#    path=/vault/FTPRoot/CruiseData
+#    browsable = yes
+#    public = yes
+#    guest ok = yes
+#    writable = yes
+#    write list = survey
+#    create mask = 0644
+#    directory mask = 0755
+#    veto files = /._*/.DS_Store/.Trashes*/
+#    delete veto files = yes
+#  
+#  [VisitorInformation]
+#    comment=Visitor Information, read-only access to guest
+#    path=/vault/FTPRoot/VisitorInformation
+#    browsable = yes
+#    public = yes
+#    guest ok = yes
+#    writable = yes
+#    write list = survey
+#    create mask = 0644
+#    directory mask = 0755
+#    veto files = /._*/.DS_Store/.Trashes*/
+#    delete veto files = yes
+#  
+#  [PublicData]
+#    comment=Public Data, read/write access to all
+#    path=/vault/FTPRoot/PublicData
+#    browseable = yes
+#    public = yes
+#    guest ok = yes
+#    writable = yes
+#    create mask = 0000
+#    directory mask = 0000
+#    veto files = /._*/.DS_Store/.Trashes*/
+#    delete veto files = yes
+#    force create mode = 666
+#    force directory mode = 777
+#  
+#  Restart the Samba service
+#  
+#  sudo systemctl restart samba-ad-dc.service
+#  
+#  All done... almost
+    - name: create OpenVDMv2 samba directives in /etc/samba/smb.conf
+      blockinfile:
+        path: /etc/samba/smb.conf
+        insertbefore: EOF
+        marker: "# {mark} OpenVDMv2 block"
+        block: |
+          [CruiseData]
+            comment=Cruise Data, read-only access to guest
+            path=/vault/FTPRoot/CruiseData
+            browsable = yes
+            public = yes
+            guest ok = yes
+            writable = yes
+            write list = survey
+            create mask = 0644
+            directory mask = 0755
+            veto files = /._*/.DS_Store/.Trashes*/
+            delete veto files = yes
+
+          [VisitorInformation]
+            comment=Visitor Information, read-only access to guest
+            path=/vault/FTPRoot/VisitorInformation
+            browsable = yes
+            public = yes
+            guest ok = yes
+            writable = yes
+            write list = survey
+            create mask = 0644
+            directory mask = 0755
+            veto files = /._*/.DS_Store/.Trashes*/
+            delete veto files = yes
+
+          [PublicData]
+            comment=Public Data, read/write access to all
+            path=/vault/FTPRoot/PublicData
+            browseable = yes
+            public = yes
+            guest ok = yes
+            writable = yes
+            create mask = 0000
+            directory mask = 0000
+            veto files = /._*/.DS_Store/.Trashes*/
+            delete veto files = yes
+            force create mode = 666
+            force directory mode = 777
+      become: true
+      notify:
+        - restart samba
+
+  handlers:
+    - name: restart apache2
+      service:
+        name: apache2
+        state: restarted
+      become: true
+        
+    - name: restart gearman
+      service:
+        name: gearman-job-server
+        state: restarted
+      become: true
+
+    - name: restart supervisor
+      service:
+        name: supervisor
+        state: restarted
+      become: true
+
+    - name: restart samba
+      service:
+        name: smbd
+        state: restarted
+      become: true
